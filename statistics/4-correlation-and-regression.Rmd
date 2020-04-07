@@ -1,0 +1,428 @@
+---
+title: "Correlation and regression"
+author: Szymon Talaga
+date: "06.04.2020"
+output: html_notebook
+---
+
+![](zip.png)
+
+<hr>
+
+```{r setup}
+# PACKAGES NEED TO BE INSTALLED FIRST
+library(tidyverse)
+library(car)
+library(carData)  # additional datasets
+library(boot)
+
+# Plotting aesthetics for ggplot
+theme_set(theme_bw())
+
+# Default notebook formatting           
+knitr::opts_chunk$set(
+    fig.width = 5,
+    fig.asp = 1,
+    fig.align = "center"
+)
+```
+
+## Vectors
+
+We start by convincing ourselves that we really can express variances, covariances and correlations
+using in terms of vectors.
+
+Below we create two slightly correlated normal variables.
+
+```{r sim_two_correlated_vectors}
+x <- rnorm(100, mean = 10, sd = 2)
+y <- 2 + .5*x + rnorm(length(x), mean = 0, sd = 2)
+
+data <- tibble(x = x, y = y)
+data %>%
+    ggplot(aes(x = x, y = y)) +
+    geom_point()
+```
+
+Now we implement a function that computes dot product of two vectors and then use
+it to implement another function for computing vector norm (length).
+We also implement a centering function.
+
+The three functions together will allow us to compute variances, covariances and correlations.
+
+```{r dot_product}
+# u and v are two numeric vectors
+dot_product <- function(u, v) {
+    # We use the fact that arthmetic operations
+    # in R are vectorized by default
+    sum(u*v)
+}
+
+# Dot product of a vector with itself
+# is its squared norm.
+#
+# So norm function can be defined as follows.
+norm <- function(u) {
+    sqrt(dot_product(u, u))
+}
+
+# Centering is just subtracting the mean
+# We use `...` so additional arguments can be passed.
+# This can be useful for passing `na.rm` argument
+# if a data vector has missing values.
+center <- function(x, ...) x - mean(x, ...)
+```
+
+Now we check if our vector-based approach works for variances and standard deviations.
+
+```{r vector_approach_variance}
+# R implementation
+s2_x <- var(x)
+
+# Our vector implementation
+s2_x_vec <- norm(center(x))^2 / (length(x) - 1)
+
+all.equal(s2_x, s2_x_vec)
+```
+```{r vector_approch_standard_deviation}
+# R implementation
+s_x <- sd(x)
+
+# Our vector implementation
+s_x_vec <- norm(center(x)) / sqrt(length(x) - 1)
+
+all.equal(s_x, s_x_vec)
+```
+
+Does it work also for covariances?
+
+```{r vector_approach_covariance}
+# R implementation
+s_xy <- cov(x, y)
+
+# Our vector implementation
+s_xy_vec <- dot_product(center(x), center(y)) / (length(x) - 1)
+
+all.equal(s_xy, s_xy_vec)
+```
+
+Last but not least, we check whether all works as expected also for correlations.
+
+```{r vector_approach_correlation}
+# R implementation
+r_xy <- cor(x, y)
+
+# Out vector implementation
+r_xy_vec <- dot_product(center(x), center(y)) / (norm(center(x))*norm(center(y)))
+
+all.equal(r_xy, r_xy_vec)
+```
+
+Of course there is no reason to use such home-made functions instead of built-in `R` implementations.
+But now we know that we were right about vector interpretation of variances, covariances and linear correlations.
+
+
+## Statistical inference for linear correlation coefficients $r$
+
+Now we demonstrate built-in `R` functions for simple statistical inference
+concerning linear (Pearson) correlation coefficients.
+
+We will work with `Duncan` dataset provided by `carData` package. 
+Write `?Duncan` in the console to read its documentation.
+
+We are interested in the correlation between `education` and `income`. 
+Without further ado we run a simple test for linear correlation between the two variables.
+To do this we use base `R` `cor.test` function.
+
+```{r dunacan_education_income_correlation}
+# We use the formula interface here
+# to extract data conveniently form the data frame.
+# We will dicsuss it in more detail later on.
+cor.test(~education + income, data = Duncan)
+```
+
+The output we got is very informative. It provides us with all information
+about the hypothesis test (by default $H_0: \rho = 0$) as well as a two-sided 95\% confidence interval.
+This information is enough for us to conclude that there is indeed a relatively strong correlation
+between education and income.
+
+To get a slightly better insight in the size of this effect we may compute the determination coefficient $R^2$
+(the fraction of retained variance).
+
+```{r duncan_education_income_rsq}
+cor(Duncan$education, Duncan$income)^2
+```
+
+So we see that about 50\% of the variance of one variable ''covaries'' with the other variable.
+That is quite a lot (as far as problems in social and behavioral sciences are considered).
+
+But was our test really solid? Remember that our data should be at least more or less normal for correlation
+tests and confidence intervals to be valid.
+
+```{r duncan_education_income_dist}
+Duncan %>%
+    select(education, income) %>%
+    pivot_longer(everything()) %>%
+    ggplot(aes(x = value)) +
+    geom_histogram(bins = 10, color = "black") +
+    facet_wrap(~name)
+```
+
+Well, the data does not look very normal. We can see it on QQ plots.
+
+```{r duncan_education_income_qqplots}
+Duncan %>%
+    select(education, income) %>%
+    pivot_longer(everything()) %>%
+    ggplot(aes(sample = value)) +
+    geom_qq() +
+    geom_qq_line() +
+    facet_wrap(~name)
+```
+
+What can we do then? One way to go is to switch to rank based Spearman $\rho$ correlation. This actually a good choice. Usually one should
+use non-parametric methods with additional care, but here we are interested just in measuring the strength of association between income
+and education and we do not really require this association to be perfectly linear, so why not to relax our assumption and allow for
+monotonic correlations? This will also solve our problem with distributions since Spearman $\rho$ does not require normality for inference.
+The price we pay is that we will not be able to compute confidence intervals easily.
+
+```{r duncan_education_income_spearman}
+cor.test(~education + income, data = Duncan, method = "spearman")
+```
+
+We can visualize the _logic_ of Spearman correlation as follows. Since it is just a Pearson correlation
+computed on ranked data we can look at a simple linear regression between ranked observations.
+
+Note that this is not something that we should do carelessly in when doing actual statistical inference,
+but it is perfectly fine as a visualization method for training purposes. But in the general case
+we should rather present raw data, since ranked data by itself is rarely of interest.
+
+```{r duncan_education_income_spearman_viz}
+Duncan %>%
+    ggplot(aes(x = rank(education), y = rank(income))) +
+    geom_point() +
+    geom_smooth(method = "lm", formula = y ~ x, se = FALSE)  # add regression line
+```
+
+This is all nice, but we would like to have some better estimate of uncertainty of our best point estimate of $\rho \approx 0.75$.
+Luckily, we can easily get such an estimate with bootstrap.
+
+```{r duncan_education_income_spearman_boot}
+# Usually we should set the random seed 
+# before running randomized computations.
+set.seed(1910)
+rho_boot <- boot(
+    data = Duncan,
+    statistic = function(data, idx) {
+        data <- data[idx,]  # choose rows indicated by resampling indexes
+        cor(data$education, data$income, method = "spearman")
+    },
+    R = 1000
+)
+rho_boot
+```
+
+Now we can use the simulated bootstrap distribution to compute a 95\% percentile confidence interval.
+
+```{r duncan_education_income_spearman_boot_ci}
+quantile(rho_boot$t, probs = c(.025, 0.975))
+```
+
+## Regression
+
+Now we will present basic `R` utilities for running simple linear regression models.
+However, as we will soon see, it will turn out that we will be using the same tools also
+to fit and examine much more complex linear models.
+
+### Formula interface
+
+Before discussing the actual statistics we have to talk about programming issues and the general
+user interface used commonly by many different regression models' implementation in `R`. This interface
+is known as _formula interface_. We already used it when running correlation tests.
+
+Formulas in `R` are special objects that can be recognized by the presence of a special symbola `~` (tilda).
+They are actually quite powerful but also quite complex, so we will discuss now only the most fundamental issues
+and more specific problems only as needed.
+
+In general the formula interface can be seen as a tool for extracting variables from data frames and while also
+splitting them into different subsets such as independent (predictor) and dependent (outcome) variables.
+
+To run a correlation test we used a call with a formula of the following form.
+
+```{r, eval = FALSE}
+cor.test(~x + y, data = data)
+# `data` is a data frame
+# and `x` and `y` are column names
+# in `data`.
+```
+
+We know that the first argument is a formula because it contains the `~` symbol. 
+Then all variable names are specified only on the right hand side (RHS) of the tilda, so it means
+that the columns we extract from the data frame will be put into the same group.
+
+This makes sense since correlations are symmetric, so we treat the two variables in the pair in the same way.
+So, the formula was used to extract columns with given names from the data set and use them as the two
+main arguments for running a correlation test.
+
+The crucial thing to remember is that formulas are usually evaluted in a context of a specific data frame.
+In this case the names are first looked up in this particular data frame and only then the names are searched
+for in the global namespace (or other namespaces according the lexical scoping rules used by `R`).
+
+
+### Specifying regression models
+
+Formula interfaces are very important because in most cases regression models can be defined **only** with formulas.
+However, this is very nice, because once we understand them formulas are super convenient and very powerful.
+
+In standard regression model we have two distinct sets of variables:
+
+1. The outcome (dependent variable)
+2. Predictors (independent variable/variables)
+
+Below we fit a linear regression model for Duncan data on education and income. To do this we use a generic
+`lm` function which is used in `R` to fit **any linear model**. Later on we will learn more about its full capabilities.
+
+```{r duncan_education_income_regression}
+model <- lm(income ~ education, data = Duncan)
+model
+```
+
+When we print a `lm` object the first thing we see is the `call` that was used to create it. It specifies all arguments
+that were passed, in particular a formula and a dataset.
+
+Note that in this case the formula is two-sided. On the left hand side (LHS) we place the outcome (dependent variable)
+and on RHS we place the predictor. We do not have to specify the intercept because `R` does it for us automatically.
+
+The basic print output shows us also the estimated coefficients. Now we can check whether the estimators
+that we derived by hand really checks out with what we see.
+
+```{r, duncan_education_income_regression_check}
+x <- Duncan$education
+y <- Duncan$income
+
+b1 <- dot_product(center(x), center(y)) / norm(center(x))^2
+b0 <- mean(y) - b1*mean(x)
+# Create a named vector that will match
+# the output of `coef` function.
+coefs <- c("(Intercept)" = b0, "education" = b1)
+
+all.equal(coefs, coef(model))
+```
+
+The `coef` function that we used above extracts estimated coefficients from a regression model.
+We see that our estimators really work as expected.
+
+The first thing we usually want to do after fitting a regression model is to look at its summary.
+
+```{r duncan_education_income_regression_summary}
+summary(model)
+```
+
+Summary objects provide us with a rich description of the model including
+details of a call, distribution of the residuals, estiamted coefficients
+already with statistical tests of the null basic hypothesis:
+$$
+H_0: \beta_i = 0
+$$
+As well estimated standard deviation (error) of residuals (square it and you get the error variance)
+and the associated number of degrees of freedom. Crucially it also tells us what is the value of $\hat{R}^2$
+(determination coefficient) and what is the outcome of a $F$ test of the null:
+$$
+H_0: R^2 = 0
+$$
+together with the degrees of freedom of the corresponding $F$ distribution.
+It also provides us with something called adjusted $R^2$ which is a sort of goodness-of-fit measure
+adjusted for the fact that there are multiple predictors in the model. We will talk more about this
+quantity later on. It is sometimes useful but should not be interpreted in the same way as $R^2$
+(the name is somewhat confusing) as it is not related to the percentage of the original variance retained in the model.
+
+So let us look at the summary once again:
+
+```{r duncan_education_income_regression_summary_again}
+summary(model)
+```
+
+We see that tests for both the intercept and education are significant, so both $\beta_0$ and $\beta_1$ are probably
+non-zero. Crucially, we see that $b_1$ estimate, that is the estimated slope coefficient is positive what indicates
+that the education is positively correlated with income.
+
+We can also easily compute confidence intervals for model parameters.
+
+```{r duncan_education_income_confint}
+confint(model, level = 0.95)
+```
+
+Let us look at the exact definition of `income` and `education` in `Duncan` dataset.
+
+ * **DATASET DESCRIPTION.** Data on the prestige and other characteristics of 45 U. S. occupations in 1950.
+ * **INCOME.** Percentage of occupational incumbents in the 1950 US Census who earned $3,500 or more per year (about $36,000 in 2017 US dollars).
+ * **EDUCATION.** Percentage of occupational incumbents in 1950 who were high school graduates (which, were we cynical, we would say is roughly equivalent to a PhD in 2017)
+ 
+So we see that observations in our dataset represent aggregated data on different occupations in U.S. in the fifties.
+And `income` indicates the share of people in the higher income strata within a given occupation 
+while `education` indicates the share of people in higher education starta within a given occupation.
+ 
+So now we can interpret the exact value of the estiamted slope coefficient $b_1$ as follows:
+
+ * Difference of plus $1\%$ in share of high education members between two occupations corresponds on average 
+ to a difference difference of plus $0.5949\%$ in share of high income members.
+
+And this interpretation follows directly from the formula for predicted values $\hat{y}_i$ that we can derive
+from the model
+
+$$
+\hat{y}_i = b_0+ b_1x_i = 10.6035 + 0.5949x_i
+$$
+
+The intercept of course specifies the expect value of `income` for a hypothetical situation of `education` equal to 
+zero.
+
+So we almost finished our analysis of the linear model for `income` and `educatio`. The last thing we should do
+(sometimes it make sense to do this in the very beginning) is to look at whether the main assumptions of the model
+seem to be more or less reasonable.
+
+The first thing we should do is to ask ourselves whether a linear model really makes sense. Remember, this is crucial
+as without this assumption our estimators are not even unbiased!
+
+There are some statistical tests for _linearity_, but they suffer from the same fallacies as any goodness-of-fit tests.
+Moreover, one should avoid testing everything and everywhere because it can lead you astray quite easily.
+Reserve statistical tests for the substantial hypotheses (or use them if anything else fails) and for other
+things prefere using visualization and your brain.
+
+So we will check linearity just by looking at a scatter plot.
+
+```{r duncan_education_income_scatter}
+Duncan %>%
+    ggplot(aes(x = education, y = income)) +
+    geom_point() +
+    geom_smooth(method = "lm", formula = y ~ x) # regression line as fitted in our model
+```
+
+We see that the trend is really clear. Moreover, the relationship looks more or less linear. There are may be some outliers 
+(the top two points for education around 25-30), but it seems that no function would be more reasonable than a simple linear fit.
+So we can conclude that a linear regression model is an okay representation for the data generating process.
+
+The second thing we should look at is the distribution of residuals.
+
+```{r duncan_education_income_residuals}
+# `resid` function extracts a vector of residuals from a model
+hist(resid(model), col = "lightblue")
+```
+
+The plot suggest we clearly have two outlying observations. In general it would good to inspect them closer and perhaps
+adjust the model somehow, but this is a more advanced topic that we will discuss later, so for now we will choose
+to ignore them.
+
+We should always also look at a QQ plot. We can use a nice implementation of a QQ plot
+provided in `car` package. It is nice because it shows also confidence bounds, so it is easier
+to decide whether a given deviation is important or not.
+
+```{r duncan_education_income_residuals_qqplot}
+qqPlot(resid(model))
+```
+
+Again, we see that the fit to the normal distribution is in general very good, but there are two potentially
+important outliers.
+
+So this is how a very basic analysis of a linear regression model could look like. In the upcoming lessons
+we will extend the ideas and technique discussed here to cover more complex models and inference scenarios.

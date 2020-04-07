@@ -10,6 +10,12 @@
 # Session Data files
 .RData
 
+# Compiled R notebooks
+**/*.nb.html
+
+# Rproj files
+**/*.Rproj
+
 # User-specific files
 .Ruserdata
 
